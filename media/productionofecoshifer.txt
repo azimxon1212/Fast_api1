@@ -1,0 +1,269 @@
+if ($plan->buyurtma_id > 0) {
+			$buyurtma = $plan->buyurtma;
+			$costumer = $buyurtma->costumer;
+			$model->buyurtma_id = $buyurtma->id;
+		} else {
+			$model->buyurtma_id = 0;
+			$buyurtma = 0;
+			$costumer = 0;
+		}
+
+		$model->jarayon_id = $jarayon->id;
+
+
+		if ($req->isAjax) {
+
+			\Yii::$app->response->format = \yii\web\Response::FORMAT_JSON;
+
+			function ombordagi_value($homashyo_id, $type, $f_id)
+			{
+
+				if ($type == 'homashyo') {
+					$ombor_val = Taminot::find()->where(['and', ['!=', 'qabul_user', 0], ['>', 'value', 0], ['name' => $homashyo_id, 'filial_id' => $f_id]])->sum('value');
+				} else {
+					$ombor_val = 0;
+				}
+
+				if (!$ombor_val) {
+					$ombor_val = 0;
+				}
+
+				return $ombor_val;
+			}
+
+			function tarkibFind($tarkibId, $itemId, $f_Id)
+			{
+
+				$aj_tarkib = Component::findOne($tarkibId);
+
+				$res =  [
+					'value' => $aj_tarkib->value,
+					'type' => $aj_tarkib->type,
+					'homashyo_id' => $aj_tarkib->homashyo_id,
+					'olchov' => $aj_tarkib->olchov(),
+				];
+
+				if ($itemId > 0) {
+					$alt_tar = AlternativeComponent::findOne($itemId);
+					$res['value'] *= $alt_tar->value;
+					$res['type'] =  $alt_tar->type;
+					$res['homashyo_id'] =  $alt_tar->item_id;
+					$res['olchov'] =  $alt_tar->olchov();
+					$homashyo_id = $alt_tar->item_id;
+					$res['name'] = $alt_tar->homashyo->name;
+				} else {
+					$homashyo_id = $aj_tarkib->homashyo_id;
+					$res['name'] = $aj_tarkib->homashyo->name;
+				}
+
+				$res['omborda'] = ombordagi_value($homashyo_id, $res['type'], $f_Id);
+
+				return $res;
+			}
+
+
+
+			if ($tarkib_id = $req->post('tarkib_id')) {
+
+				$item_id = $req->post('item_id');
+
+				return tarkibFind($tarkib_id, $item_id, $usr->filial_id);
+			}
+
+			if ($ishch = $req->post('production')) {
+
+				// $model->jarayon_id = $ishch['ish_id'];
+				$model->value = $ishch['bir_sort_val'];
+				$model->brak_value = $ishch['ikki_sort_val'];
+
+				$model->hajm = $model->value + $model->brak_value;
+				$number_error = 0;
+
+				if ($model->value > $plan->plan_value) {
+					return "rejadan_oshiq";
+				}
+
+				if (gettype($ishch['harajatlar']) == 'array') {
+					$harajatlar = $ishch['harajatlar'];
+				} else {
+					$harajatlar = [];
+				}
+
+				foreach ($harajatlar as $harj) :
+
+					$tarkib = tarkibFind($harj['tarkib_id'], $harj['item_id'],  $usr->filial_id);
+
+					$taminot_homashyo = Taminot::find()
+						->where(['name' => $tarkib['homashyo_id']])
+						->andWhere(['!=', 'qabul_user', 0])->sum('value');
+
+					$harajat = $tarkib['value'] * $model->hajm;
+					if ($taminot_homashyo < $harajat &&  $tarkib['type'] !== 'kommunal') {
+						$number_error += 1;
+					}
+
+				endforeach;
+
+				//.homashyo tekshirish
+
+				if ($number_error > 0) {
+					return "rejadan_oshiq";
+				} else {
+
+					$kerakli_value_ish = $model->hajm;
+					$jami_ketgan_tannarx = 0;
+
+					$model->save();
+
+					////--//-/-/-/-/-/-/-/-/-/-/--//-/-/-/-/-/-/-/--//---/--//--/-
+					/// tannarxni va seh taminotidagi yangi hajmnini hisoblash/-//-
+					///-/-/-/-/-/-/-/-/-/-/-/-/-/--//-/-//-/-/-/-/--//-/-//-/-/-/-
+
+					$tttt = 0;
+
+					foreach ($harajatlar as $harj) :
+
+						$item_tarkib_one = tarkibFind($harj['tarkib_id'], $harj['item_id'], $usr->filial_id);
+
+
+						$tarkib_taminot_select = Taminot::find()
+							->where(['name' => $item_tarkib_one['homashyo_id']])
+							->andWhere(['!=', 'qabul_user', 0]);
+
+						$harajat = $item_tarkib_one['value'] * $model->hajm;
+
+						if ($tarkib_taminot_select->count() > 0) {
+							$tttt += 1;
+						}
+
+						$jami_ketgan_tannarx_one = 0;
+						foreach ($tarkib_taminot_select->all() as $taminot_one) {
+
+							//agar qoldiq hajm 0 dan katta bolsa ushbu formula ishlaydi
+							if ($harajat > 0) {
+								if ($taminot_one->value < $harajat) {
+									$harajat -= $taminot_one->value;
+									$ketdi = $taminot_one->value;
+									$jami_ketgan_tannarx_one += $taminot_one->value * $taminot_one->coast;
+									$taminot_one->value = 0;
+								} else {
+									$taminot_one->value -= $harajat;
+									$ketdi = $harajat;
+									$jami_ketgan_tannarx_one += $harajat * $taminot_one->coast;
+									$harajat = 0;
+								}
+
+								$jami_ketgan_tannarx_one += $ketdi * $taminot_one->coast;
+
+
+								$taminot_one->save();
+
+								$new_his_tar = new ComponentUtilizing();
+								$new_his_tar->item_id = $item_tarkib_one['homashyo_id'];
+								$new_his_tar->value = $item_tarkib_one['value'];
+								$new_his_tar->type = $item_tarkib_one['type'];
+								$new_his_tar->production_id = $model->id;
+								$new_his_tar->save();
+							}
+						}
+						$jami_ketgan_tannarx += $jami_ketgan_tannarx_one;
+
+					endforeach;
+
+
+					foreach ($jarayon->getTarkib()->andWhere(['type' => 'kommunal'])->all() as $tr) {
+
+						$kommunal = Kommunal::findOne($tr->homashyo);
+
+						$jami_ketgan_tannarx += round($model->hajm * $kommunal->price, 2);
+					}
+
+					###### KPI ######
+
+					$ishchilar = Davomat::find()->where(['user_id' => -1]);
+					$userss = User::find(['or', ['role' => 'ishchi'], ['role' => 'ishchi_admin']])->andWhere(['filial_id' => $usr->filial_id, 'status' => 10, 'seh_id' => $seh_id])->all();
+
+					foreach ($userss as $ishchi_oen) {
+						$ishchilar = $ishchilar->orWhere(['user_id' => $ishchi_oen->id]);
+					}
+
+					$ishchilar = $ishchilar->andWhere(['filial_id' => $usr->filial_id, 'DATE(sanavaqt)' => date('Y-m-d')]);
+
+					$kpi_for_ishchi_soni = $ishchilar->count();
+
+					$jami_kpi_summa = $model->value * $jarayon->kpi;
+
+					if ($jami_kpi_summa > 0 && $kpi_for_ishchi_soni > 0) {
+
+						$kpi_summa = (int)($jami_kpi_summa / $kpi_for_ishchi_soni);
+						$kpi_tannarx = $jarayon->kpi;
+					} else {
+						$kpi_tannarx = 0;
+					}
+
+					if ($model->hajm > 0) {
+						$model->tannarx = round($jami_ketgan_tannarx / $model->hajm) + $kpi_tannarx;
+					} else {
+						$model->tannarx = 0;
+					}
+
+					$model->tannarx += $jarayon->proche + $jarayon->operator + $jarayon->transport;
+
+					foreach ($ishchilar->all() as $ishchi_onee) {
+						$p_kpi = new ProductionKpi();
+						$p_kpi->summa = $kpi_summa;
+						$p_kpi->production_id = $model->id;
+						$p_kpi->user_id = $ishchi_onee->user_id;
+						$p_kpi->type = 'p';
+
+						if ($p_kpi->summa > 0) {
+							$p_kpi->save();
+							$ishchi_onee->user->oylik += $p_kpi->summa;
+							$ishchi_onee->user->save();
+						}
+					}
+
+					if ($model->brak_value > 0) {
+						$util = new Utilization();
+						$util->item_id = $model->id;
+						$util->type = 'b';
+						$util->where_from = 'jarayon';
+						$util->value = $model->brak_value;
+						$util->save();
+					}
+
+					$model->plan_id = $plan->id;
+					$plan->plan_value -= $model->value;
+
+					if ($model->save() && $plan->save()) {
+
+						if ($usr->role == 'admin') {
+							$newSehTaminot = new SehTaminot();
+							$newSehTaminot->homashyo_id = $jarayon->id;
+							$newSehTaminot->berdi_hajm = $model->qoldiq;
+							$newSehTaminot->seh_id = $seh_id;
+							$newSehTaminot->from_seh_id = $seh_id;
+							$newSehTaminot->qabul_user = $usr->id;
+							$newSehTaminot->plan_id = $plan->id;
+							$newSehTaminot->qabul_sana = new Expression("NOW()");
+							$newSehTaminot->tannarx = $model->tannarx;
+							$newSehTaminot->buyurtma_id = $model->buyurtma_id;
+							$newSehTaminot->type = 'product';
+
+							$newSehTaminot->save();
+
+
+							if ($model->buyurtma) {
+								$model->buyurtma->ombor_value += $model->qoldiq;
+								$model->buyurtma->save();
+							}
+
+							$model->qoldiq = 0;
+							$model->omborchi = $usr->id;
+							$model->save();
+						}
+						return 'production';
+					}
+				}
+			}
+		}
